@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -31,7 +32,10 @@ type Coord struct {
 	Y int
 }
 
-var board = make(map[Coord]bool)
+var (
+	board   = make(map[Coord]bool)
+	boardMu = &sync.RWMutex{}
+)
 
 func nextGeneration(current map[Coord]bool) map[Coord]bool {
 	neighborCounts := make(map[Coord]int)
@@ -63,7 +67,9 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(500 * time.Millisecond)
+			boardMu.Lock()
 			board = nextGeneration(board)
+			boardMu.Unlock()
 		}
 	}()
 	http.HandleFunc("/ws", withCORS(func(w http.ResponseWriter, r *http.Request) {
@@ -75,10 +81,12 @@ func main() {
 		defer conn.Close()
 		for {
 			// Prepare a slice of active cells
+			boardMu.RLock()
 			active := make([]Coord, 0, len(board))
 			for k := range board {
 				active = append(active, k)
 			}
+			boardMu.RUnlock()
 			// Send as JSON
 			if err := conn.WriteJSON(active); err != nil {
 				fmt.Println("WebSocket write error:", err)
@@ -103,6 +111,7 @@ func main() {
 		}
 		const minCoord, maxCoord = 0, 999 // gridSize = 1000
 		added := 0
+		boardMu.Lock()
 		for _, cell := range payload.Cells {
 			if cell.X >= minCoord && cell.X <= maxCoord && cell.Y >= minCoord && cell.Y <= maxCoord {
 				board[Coord{X: cell.X, Y: cell.Y}] = true
@@ -112,6 +121,7 @@ func main() {
 				fmt.Printf("Ignored out-of-bounds cell: x=%d, y=%d\n", cell.X, cell.Y)
 			}
 		}
+		boardMu.Unlock()
 		fmt.Fprintf(w, "Received %d cells (in bounds)", added)
 	}))
 	fmt.Println("Starting server on :8080")
